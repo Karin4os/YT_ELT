@@ -1,6 +1,7 @@
 from airflow import DAG
 import pendulum
 from datetime import datetime, timedelta
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from api.video_stats import (
     get_playlist_id,
     get_video_ids,
@@ -38,23 +39,24 @@ with DAG(
     description="A DAG to fetch and store video statistics from a YouTube playlist",
     schedule="0 14 * * *",  # At 14:00 every day
     catchup=False,
-) as dag:
+) as dag_produce:
 
     # Step 1: Get Playlist ID
     playlist_id = get_playlist_id()
-
     # Step 2: Get Video IDs from the Playlist
     video_ids = get_video_ids(playlist_id)
-
     # Step 3: Extract Video Data
     extract_data = extract_video_data(video_ids)
-
     # Step 4: Save Data to JSON
     save_to_json_task = save_to_json(extract_data)
 
-    # Define task dependencies
-    playlist_id >> video_ids >> extract_data >> save_to_json_task
+    trigger_update_db = TriggerDagRunOperator(
+        task_id="trigger_update_db",
+        trigger_dag_id="update_db",
+    )
 
+    # Define task dependencies
+    playlist_id >> video_ids >> extract_data >> save_to_json_task >> trigger_update_db
 
 # DAG 2: update_db
 with DAG(
@@ -69,9 +71,13 @@ with DAG(
     update_staging = staging_table()
     update_core = core_table()
 
-    # Define dependencies
-    update_staging >> update_core
+    trigger_data_quality = TriggerDagRunOperator(
+        task_id="trigger_data_quality",
+        trigger_dag_id="data_quality",
+    )
 
+    # Define dependencies
+    update_staging >> update_core >> trigger_data_quality
 
 # DAG 3: data_quality
 with DAG(
